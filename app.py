@@ -8,7 +8,7 @@ import sys
 BASE_URL = "http://localhost:8000"  # Backend endpoint
 
 st.set_page_config(
-    page_title="🌍 Travel Planner Agentic Application",
+    page_title="🌍 Travel Planner Agentic Application ",
     page_icon="🌍",
     layout="centered",
     initial_sidebar_state="expanded",
