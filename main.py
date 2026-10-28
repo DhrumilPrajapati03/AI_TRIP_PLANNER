@@ -1,49 +1,76 @@
+from contextlib import asynccontextmanager
+from typing import List, Literal, Optional
+import uuid
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
 from agent.agentic_workflow import GraphBuilder
-from utils.save_to_document import save_document
 from starlette.responses import JSONResponse
-import os
-import datetime
 from dotenv import load_dotenv
 from pydantic import BaseModel
 load_dotenv()
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Build the graph once at startup instead of on every request.
+    # MemorySaver keeps each conversation's messages in memory, keyed by thread_id
+    # (history is lost when the server restarts).
+    graph = GraphBuilder(model_provider="groq")
+    app.state.react_app = graph(checkpointer=MemorySaver())
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # set specific origins in prod
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
 class QueryRequest(BaseModel):
     question: str
+    thread_id: Optional[str] = None  # omit to start a new conversation
+    # Earlier messages kept by the client; only used when the server has no state for
+    # thread_id (e.g. after a restart, since MemorySaver lives in memory)
+    history: List[ChatMessage] = []
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 @app.post("/query")
-async def query_travel_agent(query:QueryRequest):
+def query_travel_agent(query: QueryRequest):
+    # Plain `def` so FastAPI runs the blocking graph call in a worker thread
     try:
-        print(query)
-        graph = GraphBuilder(model_provider="groq")
-        react_app=graph()
-        #react_app = graph.build_graph()
+        react_app = app.state.react_app
+        thread_id = query.thread_id or str(uuid.uuid4())
+        config = {"configurable": {"thread_id": thread_id}}
 
-        png_graph = react_app.get_graph().draw_mermaid_png()
-        with open("my_graph.png", "wb") as f:
-            f.write(png_graph)
+        messages = []
+        if query.history and not react_app.get_state(config).values.get("messages"):
+            messages = [
+                HumanMessage(content=m.content) if m.role == "user" else AIMessage(content=m.content)
+                for m in query.history
+            ]
+        messages.append(HumanMessage(content=query.question))
 
-        print(f"Graph saved as 'my_graph.png' in {os.getcwd()}")
-        # Assuming request is a pydantic object like: {"question": "your text"}
-        messages={"messages": [query.question]}
-        output = react_app.invoke(messages)
+        output = react_app.invoke({"messages": messages}, config=config)
 
-        # If result is dict with messages:
         if isinstance(output, dict) and "messages" in output:
             final_output = output["messages"][-1].content  # Last AI response
         else:
             final_output = str(output)
-        
-        return {"answer": final_output}
+
+        return {"answer": final_output, "thread_id": thread_id}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})

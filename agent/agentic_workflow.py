@@ -1,6 +1,6 @@
 from utils.model_loader import ModelLoader
 from prompt_library.prompt import SYSTEM_PROMPT
-from langgraph.graph import StateGraph, MessagesState, END, START
+from langgraph.graph import StateGraph, MessagesState, START
 from langgraph.prebuilt import ToolNode, tools_condition
 from tools.weather_info_tool import WeatherInfoTool
 from tools.place_search_tool import PlaceSearchTool
@@ -37,16 +37,17 @@ class GraphBuilder():
         input_question = [self.system_prompt] + user_question
         response = self.llm_with_tools.invoke(input_question)
         return {"messages": [response]}
-    def build_graph(self):
+    def build_graph(self, checkpointer=None):
+        """Build the ReAct graph. Pass a checkpointer to keep conversation history per thread_id."""
         graph_builder=StateGraph(MessagesState)
         graph_builder.add_node("agent", self.agent_function)
         graph_builder.add_node("tools", ToolNode(tools=self.tools))
         graph_builder.add_edge(START,"agent")
+        # tools_condition routes to "tools" when the LLM calls a tool, otherwise to END
         graph_builder.add_conditional_edges("agent",tools_condition)
         graph_builder.add_edge("tools","agent")
-        graph_builder.add_edge("agent",END)
-        self.graph = graph_builder.compile()
+        self.graph = graph_builder.compile(checkpointer=checkpointer)
         return self.graph
-        
-    def __call__(self):
-        return self.build_graph()
+
+    def __call__(self, checkpointer=None):
+        return self.build_graph(checkpointer=checkpointer)
