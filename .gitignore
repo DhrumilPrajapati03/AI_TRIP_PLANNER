@@ -9,3 +9,10 @@ wheels/
 #virtual environment
 .venv
 env
+
+#secrets
+.env
+
+#generated output
+output/
+my_graph.png
